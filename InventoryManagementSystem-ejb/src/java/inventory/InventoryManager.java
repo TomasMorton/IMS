@@ -21,7 +21,7 @@ import javax.ws.rs.core.MediaType;
 /**
  * Class to handle RESTful HTTP requests containing a JSON encoded String.
  * <br>
- * This can be tested at localhost:8080/RestStockServer/test-resbeans.html
+ * This can be tested at localhost:8080/InventoryManagementSystem/test-resbeans.html
  * @author Tomas
  */
 @ManagedBean

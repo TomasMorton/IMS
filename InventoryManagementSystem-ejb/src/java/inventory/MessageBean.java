@@ -21,7 +21,7 @@ import javax.jms.Message;
 import javax.jms.MessageListener;
 import javax.jms.TextMessage;
 
-@MessageDriven(mappedName="jms/LoggerQueue")
+@MessageDriven(mappedName="InventoryQueue")
    public class MessageBean implements MessageListener
 {
    // field obtained via dependency injection (not used here)
