@@ -1,0 +1,511 @@
+package inventory;
+
+
+
+
+
+import java.io.IOException;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Properties;
+import javax.annotation.ManagedBean;
+import javax.annotation.PostConstruct;
+import javax.ejb.LocalBean;
+import javax.ejb.Singleton;
+import javax.ejb.Stateless;
+
+/**
+ * Class to manage SQL queries. Could be singleton.
+ *
+ * @author Tomas
+ */
+@Singleton
+@LocalBean
+public class DatabaseBean
+{
+
+    //Database connection settings
+    private String dbDriver;
+    private String dbAddress;
+    private String dbName;
+    private String userName;
+    private String password;
+    private Connection conn;
+    //Prepared statements
+    private PreparedStatement stmtGetInventory;
+    private PreparedStatement stmtGetItem;
+    private PreparedStatement stmtGetItemPrice;
+    private PreparedStatement stmtGetItemQuantity;
+    private PreparedStatement stmtItemList;
+    private PreparedStatement stmtAddItem;
+    private PreparedStatement stmtRemoveItem;
+    private PreparedStatement stmtUpdateQuantity;
+    private PreparedStatement stmtUpdatePrice;
+    private PreparedStatement stmtAddHistory;
+
+    @PostConstruct
+    public void prepareDatabaseConnection()
+    {
+        //declare temporary variables due to exceptions and FINAL variables
+        Properties properties = new Properties();
+        String tempDbDriver = "";
+        String tempDbAddress = "";
+        String tempDbName = "";
+        String tempUserName = "";
+        String tempPassword = "";
+        try
+        {
+            properties.loadFromXML(getClass().getResourceAsStream("SQLManagerConfig.xml"));
+            tempDbDriver = properties.get("dbDriver").toString();
+            tempDbAddress = properties.get("dbAddress").toString();
+            tempDbName = properties.get("dbName").toString();
+            tempUserName = properties.get("user").toString();
+            tempPassword = properties.get("password").toString();
+        } catch (IOException ex)
+        {
+            System.err.println("Unable to connect to database.");
+        }
+        this.dbDriver = tempDbDriver;
+        this.dbAddress = tempDbAddress;
+        this.dbName = tempDbName;
+        this.userName = tempUserName;
+        this.password = tempPassword;
+        initialiseSQLConnection();
+    }
+    
+    private void initialiseSQLConnection()
+    {
+        try
+        {
+            Class.forName(dbDriver);
+            conn = DriverManager.getConnection(dbAddress + dbName + ";create=true;user=" + 
+                    userName + ";password=" + password);
+            setupTables();
+            //Queries
+            stmtGetInventory = conn.prepareStatement("SELECT * FROM PRODUCT");
+            stmtGetItem = conn.prepareStatement("SELECT * FROM PRODUCT "
+                    + "WHERE Product_Name=?");
+            stmtGetItemPrice = conn.prepareStatement("SELECT Product_Price FROM PRODUCT "
+                    + "WHERE Product_Name=?");
+            stmtGetItemQuantity = conn.prepareStatement("SELECT Product_Quantity FROM PRODUCT "
+                    + "WHERE Product_Name=?");
+            stmtItemList = conn.prepareStatement("SELECT Product_Name FROM PRODUCT");
+            //Modifications
+            stmtAddItem = conn.prepareStatement("INSERT INTO PRODUCT (Product_Name, "
+                    + "Product_Price, Product_Quantity) VALUES (?, ?, ?)");
+            stmtRemoveItem = conn.prepareStatement("DELETE FROM PRODUCT WHERE Product_Name=?");
+            stmtUpdateQuantity = conn.prepareStatement("UPDATE PRODUCT SET Product_Quantity=? "
+                    + "WHERE Product_Name=?");
+            stmtUpdatePrice = conn.prepareStatement("UPDATE PRODUCT SET Product_Price=? "
+                    + "WHERE Product_Name=?");
+            stmtAddHistory = conn.prepareStatement("INSERT INTO HISTORY (Product_Name, "
+                    + "Product_Price, Product_Quantity) SELECT Product_Name, "
+                    + "Product_Price, Product_Quantity FROM PRODUCT WHERE Product_Name=?");
+        } catch (SQLException | ClassNotFoundException ex)
+        {
+            System.err.println("Failed to initialize database. " + ex);
+        }
+    }
+
+    private void setupTables()
+    {
+        try
+        {
+            setupProductTable();
+            setupHistoryTable();
+        } catch (SQLException e)
+        {
+            System.err.println("Failed to create database tables. " + e);
+        }
+    }
+
+    private void setupProductTable() throws SQLException
+    {
+        DatabaseMetaData dbm = conn.getMetaData();
+        // check if "employee" table is there
+        ResultSet rs = dbm.getTables(null, null, "PRODUCT", null);
+        if (!rs.next())
+        {
+            System.out.println("DatabaseBean: Creating Product table.");
+            Statement statement = conn.createStatement();
+            statement.executeUpdate("CREATE TABLE PRODUCT (PRODUCT_NAME VARCHAR(100) NOT NULL, PRODUCT_PRICE DECIMAL(5), "
+                    + "PRODUCT_QUANTITY DECIMAL(5) DEFAULT 0  NOT NULL, PRIMARY KEY (PRODUCT_NAME))");
+        }
+        rs.close();
+    }
+
+    private void setupHistoryTable() throws SQLException
+    {
+        DatabaseMetaData dbm = conn.getMetaData();
+        // check if "employee" table is there
+        ResultSet rs = dbm.getTables(null, null, "HISTORY", null);
+        if (!rs.next())
+        {
+            System.out.println("DatabaseBean: Creating History table.");
+            Statement statement = conn.createStatement();
+            statement.executeUpdate("CREATE TABLE HISTORY (PRODUCT_NAME VARCHAR(100) NOT NULL, PRODUCT_PRICE DECIMAL(5),"
+                    + " PRODUCT_QUANTITY DECIMAL(5) DEFAULT 0  NOT NULL, HISTORY_TIMESTAMP TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                    + " NOT NULL, PRIMARY KEY (HISTORY_TIMESTAMP, PRODUCT_NAME), CONSTRAINT fk_history_product_name "
+                    + "FOREIGN KEY (Product_Name) REFERENCES PRODUCT(Product_Name) ON DELETE CASCADE)");
+        }
+        rs.close();
+    }
+
+    public void closeSQLConnection()
+    {
+        try
+        {
+            stmtAddHistory.close();
+            stmtAddItem.close();
+            stmtGetInventory.close();
+            stmtGetItemPrice.close();
+            stmtGetItemQuantity.close();
+            stmtItemList.close();
+            stmtRemoveItem.close();
+            stmtUpdatePrice.close();
+            stmtUpdateQuantity.close();
+            conn.close();
+        } catch (SQLException e)
+        {
+            System.err.println("Failed to close the SQL connection. " + e);
+        }
+    }
+
+    public Inventory getInventory()
+    {
+        System.out.println("Getting inventory.");
+        Inventory inventory = new Inventory();
+        try
+        {
+            ResultSet rs = stmtGetInventory.executeQuery();
+            while (rs.next())
+            {
+                String itemName = rs.getString("Product_Name");
+                double price = rs.getInt("Product_Price") / 100.0;
+                int quantity = rs.getInt("Product_Quantity");
+                InventoryItem item = new InventoryItem(itemName, price, quantity);
+                inventory.addItem(item);
+            }
+        }
+        catch (SQLException ex)
+        {
+            System.err.println("Failed to retrieve inventory. " + ex);
+        }
+        return inventory;
+    }
+    
+    public boolean itemExists(String itemName)
+    {
+        boolean exists = false;
+        try
+        {
+            stmtGetItem.setString(1, itemName);
+            ResultSet rs = stmtGetItem.executeQuery();
+            if (rs.next())
+            {
+                exists = true;
+            }
+            rs.close();
+        } catch (SQLException ex)
+        {
+            System.err.println("Failed to check if item exists. " + ex);
+        }
+        return exists;
+    }
+
+    public InventoryItem getItem(String itemName)
+    {
+        InventoryItem item = new InventoryItem();
+        try
+        {
+            stmtGetItem.setString(1, itemName);
+            ResultSet rs = stmtGetItem.executeQuery();
+            if (rs.next())
+            {
+                String name = itemName;
+                double price = rs.getInt("Product_Price") / 100.0;
+                int quantity = rs.getInt("Product_Quantity");
+                item = new InventoryItem(name, price, quantity);
+            }
+            rs.close();
+        } catch (SQLException ex)
+        {
+            System.err.println("Failed to get item information. " + ex);
+        }
+        return item;
+    }
+    
+    public int getItemPrice(String itemName)
+    {
+        int price = -1;
+        try
+        {
+            stmtGetItemPrice.setString(1, itemName);
+            ResultSet rs = stmtGetItemPrice.executeQuery();
+            if (rs.next())
+            {
+                price = rs.getInt(1);
+            }
+            rs.close();
+        } catch (SQLException ex)
+        {
+            System.err.println("Failed to get item price. " + ex);
+        }
+        return price;
+    }
+
+    public int getItemQuantity(String itemName)
+    {
+        int quantity = -1;
+        try
+        {
+            stmtGetItemQuantity.setString(1, itemName);
+            ResultSet rs = stmtGetItemQuantity.executeQuery();
+            if (rs.next())
+            {
+                quantity = rs.getInt(1);
+            }
+            rs.close();
+        } catch (SQLException ex)
+        {
+            System.err.println("Failed to get item quantity. " + ex);
+        }
+        return quantity;
+    }
+
+    public boolean addItem(String itemName, int itemPrice, int quantity)
+    {
+        try
+        {
+            stmtAddItem.setString(1, itemName);
+            stmtAddItem.setInt(2, itemPrice);
+            stmtAddItem.setInt(3, quantity);
+            return stmtAddItem.executeUpdate() > 0;
+        } catch (SQLException ex)
+        {
+            System.err.println("Failed to add new item. " + ex);
+        }
+        return false;
+    }
+
+    public boolean addItem(InventoryItem item)
+    {
+        try
+        {
+            stmtAddItem.setString(1, item.getName());
+            stmtAddItem.setInt(2, (int) (item.getPrice() * 100));
+            stmtAddItem.setInt(3, item.getQuantity());
+            return stmtAddItem.executeUpdate() > 0;
+        }
+        catch (SQLException ex)
+        {
+            System.err.println("Failed to add new item. " + ex);
+        }
+        return false;
+    }
+    
+    /*
+     * I think this method is obselete as the overloading is handled at WSDL level.
+     */
+    public boolean addItem(String itemName, int itemPrice)
+    {
+        return addItem(itemName, itemPrice, 0);
+    }
+
+    /**
+     * Gets an array of names of all items in the database. Used by getInventory
+     * currently.
+     *
+     * @return
+     */
+    public String[] getItemNames()
+    {
+        List<String> products = new ArrayList<>();
+        try
+        {
+            ResultSet rs = stmtItemList.executeQuery();
+            while (rs.next())
+            {
+                products.add(rs.getString("Product_Name"));
+            }
+            rs.close();
+        } catch (SQLException ex)
+        {
+            System.err.println("Failed to get item list. " + ex);
+        }
+        return products.toArray(new String[0]);
+    }
+
+    public void removeItem(String itemName)
+    {
+        try
+        {
+            stmtRemoveItem.setString(1, itemName);
+            stmtRemoveItem.executeUpdate();
+        } catch (SQLException ex)
+        {
+            System.err.println("Failed to add new product. " + ex);
+        }
+    }
+
+    /**
+     * Adds <code>numberToAdd</code> items to the current quantity of available
+     * <code>itemName</code> items.
+     * <br>
+     *
+     * @param itemName
+     * @param numberToAdd
+     */
+    public void increaseQuantity(String itemName, int numberToAdd)
+    {
+        int currentQuantity = getItemQuantity(itemName);
+        int newQuantity = currentQuantity + numberToAdd;
+        newQuantity = (newQuantity < 0) ? 0 : newQuantity;
+        updateQuantity(itemName, newQuantity);
+    }
+
+    public void decreaseQuantity(String itemName, int numberToRemove)
+    {
+        increaseQuantity(itemName, -numberToRemove);
+    }
+
+    /**
+     * Creates an entry in the history table and then adjust the quantity of
+     * items in stock.
+     *
+     * @param itemName
+     * @param newQuantity
+     */
+    public void updateQuantity(String itemName, int newQuantity)
+    {
+        addToHistory(itemName);
+        try
+        {
+            stmtUpdateQuantity.setInt(1, newQuantity);
+            stmtUpdateQuantity.setString(2, itemName);
+            stmtUpdateQuantity.executeUpdate();
+        } catch (SQLException ex)
+        {
+            System.err.println("Failed to update quantity. " + ex);
+        }
+    }
+
+    private void addToHistory(String itemName)
+    {
+        try
+        {
+            stmtAddHistory.setString(1, itemName);
+            stmtAddHistory.executeUpdate();
+        } catch (SQLException ex)
+        {
+            System.err.println("Failed to update quantity. " + ex);
+        }
+    }
+
+    public void updatePrice(String itemName, int newPrice)
+    {
+        addToHistory(itemName);
+        try
+        {
+            stmtUpdatePrice.setInt(1, newPrice);
+            stmtUpdatePrice.setString(2, itemName);
+            stmtUpdatePrice.executeUpdate();
+        } catch (SQLException ex)
+        {
+            System.err.println("Failed to update price. " + ex);
+        }
+    }
+    
+    public String updateItem(InventoryItem item)
+    {
+        return updateItem(item.getName(), (int) (item.getPrice() * 100),
+                item.getQuantity());
+    }
+    
+    public String updateItem(String itemName, int price, int quantity)
+    {
+        try
+        {
+            addToHistory(itemName);
+            Statement stmt = conn.createStatement();
+            String update = "UPDATE PRODUCT SET ";
+            if (price >= 0 && quantity >= 0)
+            {
+                update += "Product_Price='" + price + "', Product_Quantity='" +
+                        quantity + "'";
+            } else
+            { 
+                update += (price >= 0) ? "Product_Price='" + price + "'"
+                        : "Product_Quantity='" + quantity + "'";                
+            }
+            update += " WHERE Product_Name='" + itemName + "'";
+            int result = stmt.executeUpdate(update);
+            return (result > 0) ? "Item '" + itemName + "' updated successfully."
+                                : "Failed to update item.";
+        }
+        catch (SQLException ex)
+        {
+            System.err.println("Failed to update item. " + ex);
+            return "Failed to update item.";
+        }
+    }
+    
+    public String addToItem(InventoryItem item)
+    {
+        return addToItem(item.getName(), (int) (item.getPrice() * 100),
+                item.getQuantity());
+    }
+    
+    public String addToItem(String itemName, int priceToAdd, int quantityToAdd)
+    {
+        int newQuantity = -1;
+        int newPrice = -1;
+        //Calculate quantity
+        if (quantityToAdd != 0)
+        {
+            int currentQuantity = getItemQuantity(itemName);
+            newQuantity = currentQuantity + quantityToAdd;
+            newQuantity = (newQuantity < 0) ? 0 : newQuantity;
+        }
+        //Calculate price    
+        if (priceToAdd != 0)
+        {
+            int currentPrice = getItemPrice(itemName);
+            newPrice = currentPrice + priceToAdd;
+            newPrice = (newPrice < 0) ? 0 : newPrice;
+        }
+        try
+        {
+            addToHistory(itemName);
+            Statement stmt = conn.createStatement();
+            String update = "UPDATE PRODUCT SET ";
+            //Check if both values updated, will need a comma
+            if (newPrice >= 0 && newQuantity >= 0)
+            {
+                update += "Product_Price='" + newPrice + "', Product_Quantity='" +
+                        newQuantity + "'";
+            } else
+            {
+                //Update a single value
+                update += (newPrice >= 0) ? "Product_Price='" + newPrice + "'"
+                        : "Product_Quantity='" + newQuantity + "'";
+            }
+            update += " WHERE Product_Name='" + itemName + "'";
+            int result = stmt.executeUpdate(update);
+            return (result > 0) ? "Item '" + itemName + "' updated successfully."
+                                : "Failed to update item.";
+        }
+        catch (SQLException ex)
+        {
+            System.err.println("Failed to update item. " + ex);
+            return "Failed to add to item.";
+        }
+    }
+}
